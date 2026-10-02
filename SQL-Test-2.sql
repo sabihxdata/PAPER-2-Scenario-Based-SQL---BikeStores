@@ -1,10 +1,11 @@
-/*STUDENT NAME : Muhammad Sabih
+\/* STUDENT NAME : Muhammad Sabih
 STUDENT ID : 874738
 BATCH : MCDE - 06
-DATE : 27-Sep-2026*/
+DATE : 27-Sep-2026 */
 
 USE bikestores;
 
+/*Task 1 — Build the Sales Detail Dataset */
 SELECT
 o.order_id,
 o.order_date,
@@ -127,4 +128,270 @@ st.quantity ASC,
 p.product_name;
 GO
 
+/* TASK 5 - Top Products Within Each Category */
 
+WITH product_sales AS
+(
+SELECT
+c.category_id,
+c.category_name,
+p.product_id,
+p.product_name,
+SUM(oi.quantity) AS total_units_sold,
+SUM(
+oi.quantity * oi.list_price * (1 - oi.discount)
+) AS total_net_revenue
+FROM production.categories AS c
+INNER JOIN production.products AS p
+ON c.category_id = p.category_id
+INNER JOIN sales.order_items AS oi
+ON p.product_id = oi.product_id
+INNER JOIN sales.orders AS o
+ON oi.order_id = o.order_id
+WHERE o.order_status = 4
+GROUP BY
+c.category_id,
+c.category_name,
+p.product_id,
+p.product_name
+),
+ranked_products AS
+(
+SELECT
+category_name,
+product_name,
+total_units_sold,
+total_net_revenue,
+DENSE_RANK() OVER
+(
+PARTITION BY category_id
+ORDER BY total_net_revenue DESC
+) AS product_position
+FROM product_sales
+)
+
+SELECT
+category_name,
+product_name,
+total_units_sold,
+total_net_revenue,
+product_position
+FROM ranked_products
+WHERE product_position <= 3
+ORDER BY
+category_name,
+product_position,
+product_name;
+GO
+
+/* TASK 6 - Monthly Sales Trend */
+
+WITH monthly_sales AS
+(
+SELECT
+YEAR(o.order_date) AS sales_year,
+MONTH(o.order_date) AS sales_month,
+SUM(
+oi.quantity * oi.list_price * (1 - oi.discount)
+) AS total_net_revenue
+FROM sales.orders AS o
+INNER JOIN sales.order_items AS oi
+ON o.order_id = oi.order_id
+WHERE o.order_status = 4
+GROUP BY
+YEAR(o.order_date),
+MONTH(o.order_date)
+),
+monthly_with_previous AS
+(
+SELECT
+sales_year,
+sales_month,
+total_net_revenue,
+LAG(total_net_revenue) OVER
+(
+ORDER BY sales_year, sales_month
+) AS previous_month_total_net_revenue
+FROM monthly_sales
+)
+
+SELECT
+sales_year,
+sales_month,
+total_net_revenue,
+previous_month_total_net_revenue,
+total_net_revenue
+
+* previous_month_total_net_revenue
+  AS revenue_change_from_previous_month
+  FROM monthly_with_previous
+  ORDER BY
+  sales_year,
+  sales_month;
+  GO
+
+/* TASK 7 - Reusable Reporting View */
+
+CREATE OR ALTER VIEW sales.vw_customer_sales_summary
+AS
+SELECT
+c.customer_id,
+c.first_name + ' ' + c.last_name AS customer_full_name,
+COUNT(DISTINCT o.order_id) AS total_completed_orders,
+COALESCE(
+SUM(oi.quantity),
+0
+) AS total_units_purchased,
+COALESCE(
+SUM(
+oi.quantity * oi.list_price * (1 - oi.discount)
+),
+0
+) AS total_net_revenue,
+MAX(o.order_date) AS most_recent_completed_order_date
+FROM sales.customers AS c
+LEFT JOIN sales.orders AS o
+ON c.customer_id = o.customer_id
+AND o.order_status = 4
+LEFT JOIN sales.order_items AS oi
+ON o.order_id = oi.order_id
+GROUP BY
+c.customer_id,
+c.first_name,
+c.last_name;
+GO
+
+/* Test the view */
+
+SELECT *
+FROM sales.vw_customer_sales_summary
+ORDER BY total_net_revenue DESC;
+GO
+
+/* TASK 8 - Safe Data Modification */
+
+BEGIN TRANSACTION;
+
+UPDATE sales.customers
+SET phone = '(999) 555-0101'
+WHERE customer_id = 1;
+
+/* Validation query */
+
+SELECT
+customer_id,
+first_name,
+last_name,
+phone
+FROM sales.customers
+WHERE customer_id = 1;
+
+/*
+Testing:
+The change can be rolled back so the original
+database remains unchanged.
+*/
+
+ROLLBACK TRANSACTION;
+GO
+
+/* TASK 9 - Store Sales Procedure */
+
+CREATE OR ALTER PROCEDURE sales.usp_store_sales_report
+@store_id INT,
+@start_date DATE,
+@end_date DATE
+AS
+BEGIN
+SET NOCOUNT ON;
+
+BEGIN TRY
+
+/* Validate date range */
+
+IF @start_date > @end_date
+BEGIN
+THROW 50001,
+'Start date cannot be later than end date.',
+1;
+END;
+
+/* Store sales report */
+
+SELECT
+p.product_name,
+SUM(oi.quantity) AS total_units_sold,
+SUM(
+oi.quantity
+
+* oi.list_price
+* (1 - oi.discount)
+  ) AS total_net_revenue
+  FROM sales.orders AS o
+  INNER JOIN sales.order_items AS oi
+  ON o.order_id = oi.order_id
+  INNER JOIN production.products AS p
+  ON oi.product_id = p.product_id
+  WHERE
+  o.store_id = @store_id
+  AND o.order_status = 4
+  AND o.order_date >= @start_date
+  AND o.order_date < DATEADD(DAY, 1, @end_date)
+  GROUP BY
+  p.product_id,
+  p.product_name
+  ORDER BY
+  total_net_revenue DESC;
+
+END TRY
+
+BEGIN CATCH
+
+THROW;
+
+END CATCH;
+
+END;
+GO
+
+/* Example procedure execution */
+
+EXEC sales.usp_store_sales_report
+@store_id = 1,
+@start_date = '2016-01-01',
+@end_date = '2018-12-31';
+GO
+
+/* TASK 10 - Management Insight Query */
+
+/*
+Business Question:
+Which products generate the highest revenue at each store?
+This measures store-level product revenue and units sold.
+Management can use this to understand product demand and sales performance.
+*/
+
+SELECT
+s.store_name,
+p.product_name,
+SUM(oi.quantity) AS total_units_sold,
+SUM(
+oi.quantity * oi.list_price * (1 - oi.discount)
+) AS total_net_revenue
+FROM sales.stores AS s
+INNER JOIN sales.orders AS o
+ON s.store_id = o.store_id
+INNER JOIN sales.order_items AS oi
+ON o.order_id = oi.order_id
+INNER JOIN production.products AS p
+ON oi.product_id = p.product_id
+WHERE o.order_status = 4
+GROUP BY
+s.store_id,
+s.store_name,
+p.product_id,
+p.product_name
+ORDER BY
+s.store_name,
+total_net_revenue DESC;
+GO
